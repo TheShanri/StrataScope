@@ -46,19 +46,24 @@
   input[type="range"]{vertical-align:middle}
 
   /* ---- Workspace ----
-     CSS grid: row 1 = all three headers (shares one height so the bodies
-     below it always start on the same line), row 2 = the bodies. */
+     The headers live in a fixed .heads grid that is always visible; only the
+     .bodies grid scrolls. (A sticky header inside one scrolling grid gets
+     confined to its own auto-sized grid area and scrolls away when zoomed in.)
+     Both grids share the same column template and a reserved scrollbar gutter
+     so the three columns stay aligned even when the bodies overflow. */
   .workspace{
-    display:grid;flex:1;overflow:auto;padding:8px;
-    grid-template-columns:minmax(0,1fr) var(--centerW) minmax(0,1fr);
-    /* +1px compensates each body's 1px bottom border so the inner content
-       height is exactly rowH*64 and the canvas lines up with the grid rows */
-    grid-template-rows:auto calc(var(--rowH) * 64 + 1px);
-    column-gap:8px;row-gap:0;align-content:start;
+    display:flex;flex-direction:column;flex:1;overflow:hidden;padding:8px;
   }
+  .heads,.bodies{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) var(--centerW) minmax(0,1fr);
+    column-gap:8px;scrollbar-gutter:stable;
+  }
+  .heads{flex:none;overflow:hidden}
+  .bodies{flex:1 1 auto;min-height:0;overflow:auto;align-content:start}
 
   .col-head{
-    position:sticky;top:0;z-index:6;background:var(--panel);
+    background:var(--panel);
     border:1px solid var(--line);border-radius:10px 10px 0 0;
     padding:8px 10px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
   }
@@ -148,7 +153,8 @@
 
 <div class="workspace" id="workspace">
 
-  <!-- ===== Header row (shared height keeps the 3 bodies aligned) ===== -->
+  <!-- ===== Header row (fixed; shared height keeps the 3 bodies aligned) ===== -->
+  <div class="heads">
   <div class="col-head imghead" data-side="left">
     <div class="title"><span class="dot" style="background:#e07b39"></span> Left image (Voltage)</div>
     <div class="head-btns">
@@ -173,8 +179,10 @@
     </div>
     <div class="fname" data-role="fname">No image — click Upload or drag a PNG here</div>
   </div>
+  </div>
 
-  <!-- ===== Body row ===== -->
+  <!-- ===== Body row (scrolls) ===== -->
+  <div class="bodies">
   <div class="col-body" data-side="left" data-role="body">
     <canvas class="imgcanvas" data-role="canvas"></canvas>
     <div class="overlay" data-role="overlay"></div>
@@ -187,6 +195,7 @@
     <canvas class="imgcanvas" data-role="canvas"></canvas>
     <div class="overlay" data-role="overlay"></div>
     <div class="drop-hint" data-role="hint">Drop raster image here</div>
+  </div>
   </div>
 
 </div>
