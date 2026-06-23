@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StrataScope — Hippocampal Layer Labeler</title>
+<style>
+  :root{
+    --rowH: 24px;
+    --centerW: 200px;
+    --bg:#f4f5f7;
+    --panel:#ffffff;
+    --line:#d9dde3;
+    --ink:#1f2733;
+    --muted:#6b7686;
+    --accent:#2d6cdf;
+    --accent-soft:#e7f0ff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    color:var(--ink);background:var(--bg);display:flex;flex-direction:column;height:100vh;overflow:hidden;
+    font-size:13px;
+  }
+
+  /* ---- Toolbar ---- */
+  .toolbar{
+    display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--panel);
+    border-bottom:1px solid var(--line);box-shadow:0 1px 3px rgba(0,0,0,.04);flex:none;flex-wrap:wrap;
+  }
+  .brand{font-weight:700;font-size:15px;letter-spacing:.2px}
+  .brand small{font-weight:400;color:var(--muted);margin-left:6px;font-size:12px}
+  .spacer{flex:1}
+  .tool-group{display:flex;align-items:center;gap:6px}
+  button{
+    font:inherit;border:1px solid var(--line);background:#fff;color:var(--ink);
+    padding:6px 11px;border-radius:7px;cursor:pointer;transition:.12s;
+  }
+  button:hover{background:#f0f2f5;border-color:#c3c9d2}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#245bc0}
+  button.danger{background:#fde8e8;border-color:#f3c5c5;color:#a3232c}
+  button.danger:hover{background:#fadbdb}
+  label.toggle{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;color:var(--ink)}
+  input[type="range"]{vertical-align:middle}
+
+  /* ---- Workspace ----
+     CSS grid: row 1 = all three headers (shares one height so the bodies
+     below it always start on the same line), row 2 = the bodies. */
+  .workspace{
+    display:grid;flex:1;overflow:auto;padding:8px;
+    grid-template-columns:minmax(0,1fr) var(--centerW) minmax(0,1fr);
+    /* +1px compensates each body's 1px bottom border so the inner content
+       height is exactly rowH*64 and the canvas lines up with the grid rows */
+    grid-template-rows:auto calc(var(--rowH) * 64 + 1px);
+    column-gap:8px;row-gap:0;align-content:start;
+  }
+
+  .col-head{
+    position:sticky;top:0;z-index:6;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px 10px 0 0;
+    padding:8px 10px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
+  }
+  .col-head .title{font-weight:600;display:flex;align-items:center;gap:8px}
+  .col-head .title .dot{width:9px;height:9px;border-radius:50%}
+  .col-head .fname{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .head-btns{display:flex;gap:5px;flex-wrap:wrap}
+  .head-btns button{padding:4px 8px;font-size:12px}
+
+  .col-body{
+    position:relative;width:100%;height:calc(var(--rowH) * 64 + 1px);
+    background:var(--panel);border:1px solid var(--line);border-top:none;
+    border-radius:0 0 10px 10px;overflow:hidden;
+  }
+
+  /* image canvas + overlay */
+  .imgcanvas{display:block;width:100%;height:100%}
+  .drop-hint{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;
+    color:var(--muted);font-size:13px;padding:20px;pointer-events:none;
+  }
+  .col-body.dragover{outline:3px dashed var(--accent);outline-offset:-3px}
+  .overlay{position:absolute;inset:0;pointer-events:none}
+  .orow{position:absolute;left:0;right:0;border-bottom:1px dashed rgba(220,40,40,.55)}
+  .orow.nogrid{border-bottom:none}
+  .orow.hl{background:rgba(45,108,223,.18)!important}
+
+  /* center selector rows */
+  .center-body{
+    position:relative;height:calc(var(--rowH) * 64 + 1px);
+    background:var(--panel);border:1px solid var(--line);border-top:none;
+    border-radius:0 0 10px 10px;overflow:hidden;
+  }
+  .crow{
+    position:absolute;left:0;right:0;display:flex;align-items:center;gap:4px;padding:0 6px;
+    border-bottom:1px solid #eef0f3;
+  }
+  .crow.hl{background:var(--accent-soft)}
+  .crow .num{width:22px;text-align:right;color:var(--muted);font-size:11px;flex:none;font-variant-numeric:tabular-nums}
+  .crow .swatch{width:10px;height:10px;border-radius:2px;flex:none;border:1px solid rgba(0,0,0,.15)}
+  .crow select{
+    flex:1;min-width:0;font:inherit;font-size:11px;border:1px solid var(--line);border-radius:5px;
+    padding:1px 3px;background:#fff;height:calc(var(--rowH) - 6px);
+  }
+  .crow select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+
+  /* legend */
+  .legend{display:flex;flex-wrap:wrap;gap:4px 8px;padding:6px 8px;border-bottom:1px solid var(--line);font-size:11px}
+  .legend .item{display:inline-flex;align-items:center;gap:4px;color:var(--muted)}
+  .legend .item b{color:var(--ink);font-weight:600}
+  .legend .sw{width:10px;height:10px;border-radius:2px;border:1px solid rgba(0,0,0,.15)}
+
+  /* ---- Crop editor modal ---- */
+  .modal-bg{position:fixed;inset:0;background:rgba(15,20,30,.55);display:none;align-items:center;justify-content:center;z-index:50}
+  .modal-bg.open{display:flex}
+  .modal{background:#fff;border-radius:12px;padding:16px;max-width:90vw;max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+  .modal h3{margin:0 0 4px}
+  .modal .hint{color:var(--muted);margin:0 0 12px;font-size:12px;max-width:760px}
+  .editor-wrap{position:relative;display:inline-block;border:1px solid var(--line);background:#222;touch-action:none}
+  .editor-wrap canvas{display:block}
+  .crop-fields{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0}
+  .crop-fields label{display:flex;flex-direction:column;font-size:11px;color:var(--muted);gap:2px}
+  .crop-fields input{width:78px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;font:inherit}
+  .modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+  .modal-actions .left{margin-right:auto;display:flex;gap:8px}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <div class="brand">StrataScope <small>Hippocampal Layer Labeler</small></div>
+  <div class="spacer"></div>
+  <div class="tool-group">
+    <label class="toggle"><input type="checkbox" id="gridToggle" checked> Grid</label>
+    <label class="toggle"><input type="checkbox" id="overlayToggle"> Color overlay</label>
+  </div>
+  <div class="tool-group">
+    <span style="color:var(--muted)">Row height</span>
+    <input type="range" id="zoom" min="14" max="48" value="24" step="1" title="Row height">
+  </div>
+  <div class="tool-group">
+    <button id="autofillBtn" title="Fill empty rows downward with the value above">⤓ Auto-fill down</button>
+    <button id="clearBtn" class="danger">Clear labels</button>
+    <button id="exportBtn" class="primary">⬇ Export CSV</button>
+  </div>
+</div>
+
+<div class="workspace" id="workspace">
+
+  <!-- ===== Header row (shared height keeps the 3 bodies aligned) ===== -->
+  <div class="col-head imghead" data-side="left">
+    <div class="title"><span class="dot" style="background:#e07b39"></span> Left image (Voltage)</div>
+    <div class="head-btns">
+      <button data-act="upload">⬆ Upload</button>
+      <button data-act="crop">✂ Crop</button>
+      <button data-act="copy">⇄ Copy crop</button>
+    </div>
+    <div class="fname" data-role="fname">No image — click Upload or drag a PNG here</div>
+  </div>
+
+  <div class="col-head centerhead">
+    <div class="title">Regions (64 channels)</div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="col-head imghead" data-side="right">
+    <div class="title"><span class="dot" style="background:#3357ff"></span> Right image (CSD)</div>
+    <div class="head-btns">
+      <button data-act="upload">⬆ Upload</button>
+      <button data-act="crop">✂ Crop</button>
+      <button data-act="copy">⇄ Copy crop</button>
+    </div>
+    <div class="fname" data-role="fname">No image — click Upload or drag a PNG here</div>
+  </div>
+
+  <!-- ===== Body row ===== -->
+  <div class="col-body" data-side="left" data-role="body">
+    <canvas class="imgcanvas" data-role="canvas"></canvas>
+    <div class="overlay" data-role="overlay"></div>
+    <div class="drop-hint" data-role="hint">Drop raster image here</div>
+  </div>
+
+  <div class="center-body" id="centerBody"></div>
+
+  <div class="col-body" data-side="right" data-role="body">
+    <canvas class="imgcanvas" data-role="canvas"></canvas>
+    <div class="overlay" data-role="overlay"></div>
+    <div class="drop-hint" data-role="hint">Drop raster image here</div>
+  </div>
+
+</div>
+
+<!-- Crop editor -->
+<div class="modal-bg" id="cropModal">
+  <div class="modal">
+    <h3>Crop to raster</h3>
+    <p class="hint">Drag the box or the corner handles to keep <b>only the heatmap raster</b> — exclude the title, axis numbers, tick labels and the colorbar. Fine-tune with the inset fields (percent trimmed from each edge). The 64 rows are then mapped evenly onto this cropped region.</p>
+    <div class="editor-wrap" id="editorWrap">
+      <canvas id="editorCanvas"></canvas>
+    </div>
+    <div class="crop-fields">
+      <label>Trim left % <input type="number" id="insL" min="0" max="95" step="0.5"></label>
+      <label>Trim right % <input type="number" id="insR" min="0" max="95" step="0.5"></label>
+      <label>Trim top % <input type="number" id="insT" min="0" max="95" step="0.5"></label>
+      <label>Trim bottom % <input type="number" id="insB" min="0" max="95" step="0.5"></label>
+    </div>
+    <div class="modal-actions">
+      <div class="left">
+        <button id="cropAuto" class="primary">🪄 Auto-detect box</button>
+        <button id="cropDefault">Reset to default</button>
+        <button id="cropFull">No crop (full image)</button>
+      </div>
+      <button id="cropCancel">Cancel</button>
+      <button id="cropDone" class="primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept="image/*" style="display:none">
+
+<script>
+(function(){
+"use strict";
+
+const ROWS = 64;
+
+const REGIONS = ["","CA1 SP","CA1","CA1 SLM","DG OML1","DG MML1","DG GCL1","HIL","DG GCL2","DG MML2","DG OML2","DG"];
+const REGION_COLORS = {
+  "CA1 SP":"#FF5733","CA1":"#33FF57","CA1 SLM":"#3357FF","DG OML1":"#FF33F6","DG MML1":"#33FFF6",
+  "DG GCL1":"#F6FF33","HIL":"#FF8C00","DG GCL2":"#8A2BE2","DG MML2":"#006400","DG OML2":"#8B4513","DG":"#808080"
+};
+// default crop insets tuned for the matplotlib raster exports (percent trimmed from each edge)
+const DEFAULT_INSETS = {L:4.5, R:8.0, T:2.5, B:6.0};
+
+const STORE_KEY = "layercake_state_v1";
+
+// ---- state ----
+const sides = {
+  left:  newSide("left"),
+  right: newSide("right"),
+};
+let labels = new Array(ROWS).fill("");
+let showOverlay = false;
+let showGrid = true;
+let rowH = 24;
+
+function newSide(name){
+  return { name, img:null, natW:0, natH:0, fileName:"", insets:{...DEFAULT_INSETS} };
+}
+
+// ---- element lookups ----
+// Header and body are now separate grid cells that share a data-side attribute.
+function headEl(side){ return document.querySelector('.imghead[data-side="'+side+'"]'); }
+function bodyEl(side){ return document.querySelector('.col-body[data-side="'+side+'"]'); }
+function el(side, role){
+  if(role === 'body') return bodyEl(side);
+  if(role === 'fname') return headEl(side).querySelector('[data-role="fname"]');
+  return bodyEl(side).querySelector('[data-role="'+role+'"]'); // canvas, overlay, hint
+}
+
+const centerBody = document.getElementById('centerBody');
+const legendEl = document.getElementById('legend');
+const fileInput = document.getElementById('fileInput');
+
+// =========================================================
+//  Center selector rows
+// =========================================================
+const rowEls = [];        // center rows
+const overlayRows = { left:[], right:[] };
+
+function buildCenter(){
+  centerBody.innerHTML = "";
+  rowEls.length = 0;
+  for(let i=0;i<ROWS;i++){
+    const row = document.createElement('div');
+    row.className = 'crow';
+    row.dataset.index = i;
+
+    const num = document.createElement('span');
+    num.className = 'num'; num.textContent = (i+1);
+
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+
+    const sel = document.createElement('select');
+    REGIONS.forEach(r=>{
+      const o = document.createElement('option');
+      o.value = r; o.textContent = r === "" ? "—" : r;
+      sel.appendChild(o);
+    });
+    sel.value = labels[i] || "";
+    sel.addEventListener('change', ()=>{
+      labels[i] = sel.value;
+      updateRowColor(i);
+      refreshOverlays();
+      updateLegend();
+      saveState();
+    });
+
+    row.appendChild(num);
+    row.appendChild(sw);
+    row.appendChild(sel);
+    centerBody.appendChild(row);
+    rowEls.push({row, sel, sw});
+
+    row.addEventListener('mouseenter', ()=>setHover(i,true));
+    row.addEventListener('mouseleave', ()=>setHover(i,false));
+  }
+  layoutRows();
+}
+
+function layoutRows(){
+  for(let i=0;i<ROWS;i++){
+    const r = rowEls[i].row;
+    r.style.top = (i*rowH)+'px';
+    r.style.height = rowH+'px';
+  }
+}
+
+function updateRowColor(i){
+  const v = labels[i];
+  const c = REGION_COLORS[v];
+  rowEls[i].sw.style.background = c || 'transparent';
+}
+
+// =========================================================
+//  Build overlays (color rows + grid) on each image
+// =========================================================
+function buildOverlay(side){
+  const ov = el(side,'overlay');
+  ov.innerHTML = "";
+  overlayRows[side] = [];
+  for(let i=0;i<ROWS;i++){
+    const d = document.createElement('div');
+    d.className = 'orow';
+    d.dataset.index = i;
+    ov.appendChild(d);
+    overlayRows[side].push(d);
+  }
+}
+
+function refreshOverlays(){
+  ['left','right'].forEach(side=>{
+    const arr = overlayRows[side];
+    for(let i=0;i<ROWS;i++){
+      const d = arr[i];
+      d.style.top = (i*rowH)+'px';
+      d.style.height = rowH+'px';
+      d.classList.toggle('nogrid', !showGrid);
+      let bg = 'transparent';
+      if(showOverlay){
+        const c = REGION_COLORS[labels[i]];
+        if(c) bg = hexToRgba(c, .35);
+      }
+      d.style.background = bg;
+    }
+  });
+}
+
+function setHover(i, on){
+  rowEls[i].row.classList.toggle('hl', on);
+  overlayRows.left[i] && overlayRows.left[i].classList.toggle('hl', on);
+  overlayRows.right[i] && overlayRows.right[i].classList.toggle('hl', on);
+}
+
+function hexToRgba(hex, a){
+  hex = hex.replace('#','');
+  const r=parseInt(hex.substr(0,2),16), g=parseInt(hex.substr(2,2),16), b=parseInt(hex.substr(4,2),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// =========================================================
+//  Image rendering (canvas, cropped)
+// =========================================================
+function renderImage(side){
+  const s = sides[side];
+  const canvas = el(side,'canvas');
+  const body = el(side,'body');
+  const hint = el(side,'hint');
+  const cssW = body.clientWidth;
+  // Height MUST match the overlay grid exactly: the grid rows total ROWS*rowH,
+  // so draw/display the image over the same height (not clientHeight, which is
+  // 1px shorter because of the body's bottom border and would drift the channels).
+  const cssH = ROWS * rowH;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.width = Math.max(1, Math.round(cssW*dpr));
+  canvas.height = Math.max(1, Math.round(cssH*dpr));
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cssW,cssH);
+
+  if(!s.img){ hint.style.display='flex'; return; }
+  hint.style.display='none';
+
+  const {L,R,T,B} = s.insets;
+  const sx = (L/100)*s.natW;
+  const sy = (T/100)*s.natH;
+  const sw = Math.max(1,(1-(L+R)/100)*s.natW);
+  const sh = Math.max(1,(1-(T+B)/100)*s.natH);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(s.img, sx, sy, sw, sh, 0, 0, cssW, cssH);
+}
+
+function renderAll(){
+  renderImage('left');
+  renderImage('right');
+  refreshOverlays();
+}
+
+// =========================================================
+//  Auto-detect the plot box (the black axes rectangle)
+//  Returns crop insets {L,R,T,B} in %, or null if not found.
+//  Cropping to this box makes the 64 even rows line up with channels.
+// =========================================================
+function detectPlotBox(img){
+  const W = img.naturalWidth, H = img.naturalHeight;
+  if(!W || !H) return null;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const cx = c.getContext('2d', {willReadFrequently:true});
+  cx.drawImage(img, 0, 0);
+  let data;
+  try{ data = cx.getImageData(0,0,W,H).data; }catch(e){ return null; }
+
+  const isDark = (i)=> data[i]<110 && data[i+1]<110 && data[i+2]<110;
+
+  // Row darkness profile -> top & bottom spines span the full plot width
+  const hTh = 0.45 * W;
+  let top=-1, bottom=-1;
+  for(let y=0;y<H;y++){
+    let cnt=0; const base=y*W*4;
+    for(let x=0;x<W;x++){ if(isDark(base+x*4)) cnt++; }
+    if(cnt>hTh){ if(top<0) top=y; bottom=y; }
+  }
+  if(top<0 || bottom<0 || (bottom-top) < H*0.2) return null;
+
+  // Left & right from the top spine: take the FIRST continuous dark run
+  // (ignores the colorbar, which sits after a wide white gap)
+  const band = Math.max(1, Math.round(H*0.005));
+  const colTop = new Int32Array(W);
+  for(let y=top; y<=Math.min(H-1, top+band); y++){
+    const base=y*W*4;
+    for(let x=0;x<W;x++){ if(isDark(base+x*4)) colTop[x]++; }
+  }
+  let left=-1;
+  for(let x=0;x<W;x++){ if(colTop[x]>0){ left=x; break; } }
+  if(left<0) return null;
+  let right=left, gap=0; const maxGap=Math.round(W*0.02);
+  for(let x=left;x<W;x++){
+    if(colTop[x]>0){ right=x; gap=0; }
+    else { if(++gap>maxGap) break; }
+  }
+  if((right-left) < W*0.2) return null;
+
+  return {
+    L: +((left/W)*100).toFixed(2),
+    R: +(((W-1-right)/W)*100).toFixed(2),
+    T: +((top/H)*100).toFixed(2),
+    B: +(((H-1-bottom)/H)*100).toFixed(2),
+  };
+}
+
+// =========================================================
+//  Load image
+// =========================================================
+let uploadTargetSide = null;
+function loadFile(side, file){
+  if(!file || !file.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = ()=>{
+    const s = sides[side];
+    s.img = img; s.natW = img.naturalWidth; s.natH = img.naturalHeight; s.fileName = file.name;
+    el(side,'fname').textContent = file.name + `  (${img.naturalWidth}×${img.naturalHeight})`;
+    const det = detectPlotBox(img);
+    if(det) s.insets = det;            // auto-crop to the plot box on upload
+    renderImage(side);
+    saveState();
+  };
+  img.src = url;
+}
+
+// =========================================================
+//  Crop editor
+// =========================================================
+const cropModal = document.getElementById('cropModal');
+const editorWrap = document.getElementById('editorWrap');
+const editorCanvas = document.getElementById('editorCanvas');
+const insInputs = {L:document.getElementById('insL'),R:document.getElementById('insR'),T:document.getElementById('insT'),B:document.getElementById('insB')};
+let editSide = null;
+let editInsets = {...DEFAULT_INSETS};
+let editScale = 1, EW=0, EH=0;
+
+function openCrop(side){
+  const s = sides[side];
+  if(!s.img){ alert("Upload an image for this panel first."); return; }
+  editSide = side;
+  editInsets = {...s.insets};
+  // fit image into editor box
+  const maxW = Math.min(820, window.innerWidth*0.8);
+  const maxH = window.innerHeight*0.6;
+  editScale = Math.min(maxW/s.natW, maxH/s.natH);
+  EW = Math.round(s.natW*editScale);
+  EH = Math.round(s.natH*editScale);
+  editorCanvas.width = EW; editorCanvas.height = EH;
+  syncInsetInputs();
+  drawEditor();
+  cropModal.classList.add('open');
+}
+function closeCrop(){ cropModal.classList.remove('open'); editSide=null; }
+
+function syncInsetInputs(){
+  insInputs.L.value = round1(editInsets.L);
+  insInputs.R.value = round1(editInsets.R);
+  insInputs.T.value = round1(editInsets.T);
+  insInputs.B.value = round1(editInsets.B);
+}
+function round1(n){ return Math.round(n*10)/10; }
+
+function drawEditor(){
+  const s = sides[editSide];
+  const ctx = editorCanvas.getContext('2d');
+  ctx.clearRect(0,0,EW,EH);
+  ctx.drawImage(s.img,0,0,EW,EH);
+
+  const rx = (editInsets.L/100)*EW;
+  const ry = (editInsets.T/100)*EH;
+  const rw = (1-(editInsets.L+editInsets.R)/100)*EW;
+  const rh = (1-(editInsets.T+editInsets.B)/100)*EH;
+
+  // dark mask outside crop
+  ctx.fillStyle = 'rgba(10,15,25,.55)';
+  ctx.fillRect(0,0,EW,ry);                       // top
+  ctx.fillRect(0,ry+rh,EW,EH-(ry+rh));           // bottom
+  ctx.fillRect(0,ry,rx,rh);                      // left
+  ctx.fillRect(rx+rw,ry,EW-(rx+rw),rh);          // right
+
+  // crop border
+  ctx.strokeStyle = '#2d6cdf'; ctx.lineWidth = 2;
+  ctx.strokeRect(rx,ry,rw,rh);
+
+  // corner handles
+  const hs = 8;
+  ctx.fillStyle = '#fff'; ctx.strokeStyle='#2d6cdf';
+  [[rx,ry],[rx+rw,ry],[rx,ry+rh],[rx+rw,ry+rh]].forEach(p=>{
+    ctx.beginPath(); ctx.rect(p[0]-hs/2,p[1]-hs/2,hs,hs); ctx.fill(); ctx.stroke();
+  });
+}
+
+// editor pointer interaction
+let dragMode = null, dragStart = null, startInsets=null;
+function editorPos(e){
+  const r = editorCanvas.getBoundingClientRect();
+  return {x:e.clientX-r.left, y:e.clientY-r.top};
+}
+function cropRectPx(){
+  return {
+    rx:(editInsets.L/100)*EW, ry:(editInsets.T/100)*EH,
+    rw:(1-(editInsets.L+editInsets.R)/100)*EW, rh:(1-(editInsets.T+editInsets.B)/100)*EH
+  };
+}
+editorCanvas.addEventListener('pointerdown', e=>{
+  editorCanvas.setPointerCapture(e.pointerId);
+  const p = editorPos(e);
+  const {rx,ry,rw,rh}=cropRectPx();
+  const near=(a,b)=>Math.abs(p.x-a)<12 && Math.abs(p.y-b)<12;
+  if(near(rx,ry)) dragMode='tl';
+  else if(near(rx+rw,ry)) dragMode='tr';
+  else if(near(rx,ry+rh)) dragMode='bl';
+  else if(near(rx+rw,ry+rh)) dragMode='br';
+  else if(p.x>rx&&p.x<rx+rw&&p.y>ry&&p.y<ry+rh) dragMode='move';
+  else dragMode=null;
+  dragStart=p; startInsets={...editInsets};
+});
+editorCanvas.addEventListener('pointermove', e=>{
+  if(!dragMode) return;
+  const p = editorPos(e);
+  let dxp = (p.x-dragStart.x)/EW*100;
+  let dyp = (p.y-dragStart.y)/EH*100;
+  let n = {...startInsets};
+  if(dragMode==='move'){
+    n.L = clamp(startInsets.L+dxp, 0, 95); n.R = clamp(startInsets.R-dxp,0,95);
+    n.T = clamp(startInsets.T+dyp, 0, 95); n.B = clamp(startInsets.B-dyp,0,95);
+  } else {
+    if(dragMode.includes('l')) n.L = clamp(startInsets.L+dxp,0,100-startInsets.R-3);
+    if(dragMode.includes('r')) n.R = clamp(startInsets.R-dxp,0,100-startInsets.L-3);
+    if(dragMode.includes('t')) n.T = clamp(startInsets.T+dyp,0,100-startInsets.B-3);
+    if(dragMode.includes('b')) n.B = clamp(startInsets.B-dyp,0,100-startInsets.T-3);
+  }
+  editInsets = n; syncInsetInputs(); drawEditor();
+});
+editorCanvas.addEventListener('pointerup', ()=>{ dragMode=null; });
+
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+
+Object.values(insInputs).forEach(inp=>{
+  inp.addEventListener('input', ()=>{
+    editInsets = {
+      L:clamp(parseFloat(insInputs.L.value)||0,0,95),
+      R:clamp(parseFloat(insInputs.R.value)||0,0,95),
+      T:clamp(parseFloat(insInputs.T.value)||0,0,95),
+      B:clamp(parseFloat(insInputs.B.value)||0,0,95),
+    };
+    drawEditor();
+  });
+});
+
+document.getElementById('cropAuto').onclick = ()=>{
+  const det = detectPlotBox(sides[editSide].img);
+  if(det){ editInsets=det; syncInsetInputs(); drawEditor(); }
+  else alert("Couldn't auto-detect the plot box — adjust the corners or insets manually.");
+};
+document.getElementById('cropDefault').onclick = ()=>{ editInsets={...DEFAULT_INSETS}; syncInsetInputs(); drawEditor(); };
+document.getElementById('cropFull').onclick = ()=>{ editInsets={L:0,R:0,T:0,B:0}; syncInsetInputs(); drawEditor(); };
+document.getElementById('cropCancel').onclick = closeCrop;
+document.getElementById('cropDone').onclick = ()=>{
+  sides[editSide].insets = {...editInsets};
+  renderImage(editSide);
+  saveState();
+  closeCrop();
+};
+cropModal.addEventListener('click', e=>{ if(e.target===cropModal) closeCrop(); });
+
+// =========================================================
+//  Legend with live counts
+// =========================================================
+function updateLegend(){
+  legendEl.innerHTML = "";
+  const counts = {};
+  labels.forEach(l=>{ if(l) counts[l]=(counts[l]||0)+1; });
+  Object.keys(REGION_COLORS).forEach(name=>{
+    const it = document.createElement('span');
+    it.className='item';
+    const c = counts[name]||0;
+    it.innerHTML = `<span class="sw" style="background:${REGION_COLORS[name]}"></span>${name}${c?` <b>${c}</b>`:''}`;
+    legendEl.appendChild(it);
+  });
+}
+
+// =========================================================
+//  Toolbar actions
+// =========================================================
+document.getElementById('overlayToggle').addEventListener('change', e=>{ showOverlay=e.target.checked; refreshOverlays(); saveState(); });
+document.getElementById('gridToggle').addEventListener('change', e=>{ showGrid=e.target.checked; refreshOverlays(); saveState(); });
+document.getElementById('zoom').addEventListener('input', e=>{
+  rowH = parseInt(e.target.value,10);
+  document.documentElement.style.setProperty('--rowH', rowH+'px');
+  layoutRows(); refreshOverlays(); renderAll(); saveState();
+});
+
+document.getElementById('autofillBtn').addEventListener('click', ()=>{
+  let last="";
+  for(let i=0;i<ROWS;i++){
+    if(labels[i]) last=labels[i];
+    else if(last){ labels[i]=last; rowEls[i].sel.value=last; updateRowColor(i); }
+  }
+  refreshOverlays(); updateLegend(); saveState();
+});
+
+document.getElementById('clearBtn').addEventListener('click', ()=>{
+  if(!confirm("Clear all 64 labels?")) return;
+  labels = new Array(ROWS).fill("");
+  for(let i=0;i<ROWS;i++){ rowEls[i].sel.value=""; updateRowColor(i); }
+  refreshOverlays(); updateLegend(); saveState();
+});
+
+document.getElementById('exportBtn').addEventListener('click', ()=>{
+  let csv = "Row,Region\n";
+  for(let i=0;i<ROWS;i++){
+    csv += `${i+1},${labels[i] ? labels[i] : "Unlabeled"}\n`;
+  }
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = "layer_labels.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// per-panel head buttons
+['left','right'].forEach(side=>{
+  headEl(side).querySelectorAll('.head-btns button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const act = btn.dataset.act;
+      if(act==='upload'){ uploadTargetSide=side; fileInput.value=""; fileInput.click(); }
+      else if(act==='crop'){ openCrop(side); }
+      else if(act==='copy'){
+        const other = side==='left'?'right':'left';
+        sides[other].insets = {...sides[side].insets};
+        renderImage(other); saveState();
+      }
+    });
+  });
+
+  // drag & drop
+  const body = el(side,'body');
+  body.addEventListener('dragover', e=>{ e.preventDefault(); body.classList.add('dragover'); });
+  body.addEventListener('dragleave', ()=> body.classList.remove('dragover'));
+  body.addEventListener('drop', e=>{
+    e.preventDefault(); body.classList.remove('dragover');
+    if(e.dataTransfer.files[0]) loadFile(side, e.dataTransfer.files[0]);
+  });
+  // click empty panel to upload
+  body.addEventListener('click', ()=>{ if(!sides[side].img){ uploadTargetSide=side; fileInput.value=""; fileInput.click(); }});
+});
+
+fileInput.addEventListener('change', ()=>{
+  if(fileInput.files[0] && uploadTargetSide) loadFile(uploadTargetSide, fileInput.files[0]);
+});
+
+// =========================================================
+//  Persistence (labels + crop insets, not the images)
+// =========================================================
+function saveState(){
+  try{
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+      labels, showOverlay, showGrid, rowH,
+      insets:{left:sides.left.insets, right:sides.right.insets}
+    }));
+  }catch(e){}
+}
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORE_KEY);
+    if(!raw) return;
+    const st = JSON.parse(raw);
+    if(Array.isArray(st.labels) && st.labels.length===ROWS) labels = st.labels;
+    if(typeof st.showOverlay==='boolean') showOverlay = st.showOverlay;
+    if(typeof st.showGrid==='boolean') showGrid = st.showGrid;
+    if(typeof st.rowH==='number') rowH = st.rowH;
+    if(st.insets){ if(st.insets.left) sides.left.insets={...st.insets.left}; if(st.insets.right) sides.right.insets={...st.insets.right}; }
+  }catch(e){}
+}
+
+// =========================================================
+//  Init
+// =========================================================
+function init(){
+  loadState();
+  document.documentElement.style.setProperty('--rowH', rowH+'px');
+  document.getElementById('zoom').value = rowH;
+  document.getElementById('overlayToggle').checked = showOverlay;
+  document.getElementById('gridToggle').checked = showGrid;
+
+  buildCenter();
+  buildOverlay('left'); buildOverlay('right');
+  for(let i=0;i<ROWS;i++) updateRowColor(i);
+  updateLegend();
+  refreshOverlays();
+  renderAll();
+
+  // re-render canvases on container resize
+  const ro = new ResizeObserver(()=>{ renderAll(); });
+  ro.observe(el('left','body'));
+  ro.observe(el('right','body'));
+}
+window.addEventListener('load', init);
+
+})();
+</script>
+</body>
+</html>
