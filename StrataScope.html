@@ -50,13 +50,14 @@
      .bodies grid scrolls. (A sticky header inside one scrolling grid gets
      confined to its own auto-sized grid area and scrolls away when zoomed in.)
      Both grids share the same column template and a reserved scrollbar gutter
-     so the three columns stay aligned even when the bodies overflow. */
+     so the columns stay aligned even when the bodies overflow.
+     Columns: label selector (leftmost), then Voltage / CSD / Units images. */
   .workspace{
     display:flex;flex-direction:column;flex:1;overflow:hidden;padding:8px;
   }
   .heads,.bodies{
     display:grid;
-    grid-template-columns:minmax(0,1fr) var(--centerW) minmax(0,1fr);
+    grid-template-columns:var(--centerW) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
     column-gap:8px;scrollbar-gutter:stable;
   }
   .heads{flex:none;overflow:hidden}
@@ -153,8 +154,13 @@
 
 <div class="workspace" id="workspace">
 
-  <!-- ===== Header row (fixed; shared height keeps the 3 bodies aligned) ===== -->
+  <!-- ===== Header row (fixed; shared height keeps the bodies aligned) ===== -->
   <div class="heads">
+  <div class="col-head centerhead">
+    <div class="title">Regions (64 channels)</div>
+    <div class="legend" id="legend"></div>
+  </div>
+
   <div class="col-head imghead" data-side="left">
     <div class="title"><span class="dot" style="background:#e07b39"></span> Left image (Voltage)</div>
     <div class="head-btns">
@@ -163,11 +169,6 @@
       <button data-act="copy">⇄ Copy crop</button>
     </div>
     <div class="fname" data-role="fname">No image — click Upload or drag a PNG here</div>
-  </div>
-
-  <div class="col-head centerhead">
-    <div class="title">Regions (64 channels)</div>
-    <div class="legend" id="legend"></div>
   </div>
 
   <div class="col-head imghead" data-side="right">
@@ -179,22 +180,37 @@
     </div>
     <div class="fname" data-role="fname">No image — click Upload or drag a PNG here</div>
   </div>
+
+  <div class="col-head imghead" data-side="units">
+    <div class="title"><span class="dot" style="background:#11a06b"></span> Units (multiunit 300–6000 Hz)</div>
+    <div class="head-btns">
+      <button data-act="upload">⬆ Upload</button>
+      <button data-act="crop">✂ Crop</button>
+    </div>
+    <div class="fname" data-role="fname">No image — 32 even channels, each row = a label pair</div>
+  </div>
   </div>
 
   <!-- ===== Body row (scrolls) ===== -->
   <div class="bodies">
+  <div class="center-body" id="centerBody"></div>
+
   <div class="col-body" data-side="left" data-role="body">
     <canvas class="imgcanvas" data-role="canvas"></canvas>
     <div class="overlay" data-role="overlay"></div>
     <div class="drop-hint" data-role="hint">Drop raster image here</div>
   </div>
 
-  <div class="center-body" id="centerBody"></div>
-
   <div class="col-body" data-side="right" data-role="body">
     <canvas class="imgcanvas" data-role="canvas"></canvas>
     <div class="overlay" data-role="overlay"></div>
     <div class="drop-hint" data-role="hint">Drop raster image here</div>
+  </div>
+
+  <div class="col-body" data-side="units" data-role="body">
+    <canvas class="imgcanvas" data-role="canvas"></canvas>
+    <div class="overlay" data-role="overlay"></div>
+    <div class="drop-hint" data-role="hint">Drop multiunit image here</div>
   </div>
   </div>
 
@@ -233,6 +249,11 @@
 "use strict";
 
 const ROWS = 64;
+// Image panels. Voltage/CSD show one row per labeller channel (64); the
+// multiunit "Units" panel plots every even channel, so it has half the rows
+// and each of its rows spans a pair of labeller rows (1/2, 3/4, ...).
+const IMG_SIDES   = ['left','right','units'];
+const PANEL_ROWS  = { left:ROWS, right:ROWS, units:ROWS/2 };
 
 const REGIONS = ["","CA1 SP","CA1","CA1 SLM","DG OML1","DG MML1","DG GCL1","HIL","DG GCL2","DG MML2","DG OML2","DG"];
 const REGION_COLORS = {
@@ -241,6 +262,9 @@ const REGION_COLORS = {
 };
 // default crop insets tuned for the matplotlib raster exports (percent trimmed from each edge)
 const DEFAULT_INSETS = {L:4.5, R:8.0, T:2.5, B:6.0};
+// the MATLAB multiunit export has no colourbar and a slimmer frame, so it gets
+// its own starting crop (best-effort "ready to go" — tweak in the crop editor)
+const UNITS_INSETS   = {L:0.0, R:0.0, T:2.0, B:3.9};
 
 const STORE_KEY = "layercake_state_v1";
 
@@ -248,14 +272,15 @@ const STORE_KEY = "layercake_state_v1";
 const sides = {
   left:  newSide("left"),
   right: newSide("right"),
+  units: newSide("units", UNITS_INSETS),
 };
 let labels = new Array(ROWS).fill("");
 let showOverlay = false;
 let showGrid = true;
 let rowH = 24;
 
-function newSide(name){
-  return { name, img:null, natW:0, natH:0, fileName:"", insets:{...DEFAULT_INSETS} };
+function newSide(name, insets){
+  return { name, img:null, natW:0, natH:0, fileName:"", insets:{...(insets||DEFAULT_INSETS)} };
 }
 
 // ---- element lookups ----
@@ -276,7 +301,7 @@ const fileInput = document.getElementById('fileInput');
 //  Center selector rows
 // =========================================================
 const rowEls = [];        // center rows
-const overlayRows = { left:[], right:[] };
+const overlayRows = { left:[], right:[], units:[] };
 
 function buildCenter(){
   centerBody.innerHTML = "";
@@ -340,7 +365,7 @@ function buildOverlay(side){
   const ov = el(side,'overlay');
   ov.innerHTML = "";
   overlayRows[side] = [];
-  for(let i=0;i<ROWS;i++){
+  for(let i=0;i<PANEL_ROWS[side];i++){
     const d = document.createElement('div');
     d.className = 'orow';
     d.dataset.index = i;
@@ -350,16 +375,20 @@ function buildOverlay(side){
 }
 
 function refreshOverlays(){
-  ['left','right'].forEach(side=>{
+  IMG_SIDES.forEach(side=>{
     const arr = overlayRows[side];
-    for(let i=0;i<ROWS;i++){
+    const mult = ROWS / PANEL_ROWS[side];   // 1 for the 64-row panels, 2 for the units panel
+    for(let i=0;i<PANEL_ROWS[side];i++){
       const d = arr[i];
-      d.style.top = (i*rowH)+'px';
-      d.style.height = rowH+'px';
+      d.style.top = (i*rowH*mult)+'px';
+      d.style.height = (rowH*mult)+'px';
       d.classList.toggle('nogrid', !showGrid);
       let bg = 'transparent';
       if(showOverlay){
-        const c = REGION_COLORS[labels[i]];
+        // a units row covers a label pair; colour it from the first set label in the pair
+        let lbl = labels[i*mult];
+        for(let k=1;k<mult && !lbl;k++) lbl = labels[i*mult+k];
+        const c = REGION_COLORS[lbl];
         if(c) bg = hexToRgba(c, .35);
       }
       d.style.background = bg;
@@ -369,8 +398,12 @@ function refreshOverlays(){
 
 function setHover(i, on){
   rowEls[i].row.classList.toggle('hl', on);
-  overlayRows.left[i] && overlayRows.left[i].classList.toggle('hl', on);
-  overlayRows.right[i] && overlayRows.right[i].classList.toggle('hl', on);
+  // highlight the matching overlay row on each image (units maps the pair to one row)
+  IMG_SIDES.forEach(side=>{
+    const idx = Math.floor(i / (ROWS / PANEL_ROWS[side]));
+    const d = overlayRows[side][idx];
+    if(d) d.classList.toggle('hl', on);
+  });
 }
 
 function hexToRgba(hex, a){
@@ -414,8 +447,7 @@ function renderImage(side){
 }
 
 function renderAll(){
-  renderImage('left');
-  renderImage('right');
+  IMG_SIDES.forEach(side=> renderImage(side));
   refreshOverlays();
 }
 
@@ -484,8 +516,9 @@ function loadFile(side, file){
     const s = sides[side];
     s.img = img; s.natW = img.naturalWidth; s.natH = img.naturalHeight; s.fileName = file.name;
     el(side,'fname').textContent = file.name + `  (${img.naturalWidth}×${img.naturalHeight})`;
-    const det = detectPlotBox(img);
-    if(det) s.insets = det;            // auto-crop to the plot box on upload
+    // auto-crop to the detected plot box (skipped for the units panel, whose
+    // outer frame fools the detector — it keeps its UNITS_INSETS start instead)
+    if(side !== 'units'){ const det = detectPlotBox(img); if(det) s.insets = det; }
     renderImage(side);
     saveState();
   };
@@ -690,7 +723,7 @@ document.getElementById('exportBtn').addEventListener('click', ()=>{
 });
 
 // per-panel head buttons
-['left','right'].forEach(side=>{
+IMG_SIDES.forEach(side=>{
   headEl(side).querySelectorAll('.head-btns button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const act = btn.dataset.act;
@@ -727,7 +760,7 @@ function saveState(){
   try{
     localStorage.setItem(STORE_KEY, JSON.stringify({
       labels, showOverlay, showGrid, rowH,
-      insets:{left:sides.left.insets, right:sides.right.insets}
+      insets:{left:sides.left.insets, right:sides.right.insets, units:sides.units.insets}
     }));
   }catch(e){}
 }
@@ -740,7 +773,7 @@ function loadState(){
     if(typeof st.showOverlay==='boolean') showOverlay = st.showOverlay;
     if(typeof st.showGrid==='boolean') showGrid = st.showGrid;
     if(typeof st.rowH==='number') rowH = st.rowH;
-    if(st.insets){ if(st.insets.left) sides.left.insets={...st.insets.left}; if(st.insets.right) sides.right.insets={...st.insets.right}; }
+    if(st.insets){ if(st.insets.left) sides.left.insets={...st.insets.left}; if(st.insets.right) sides.right.insets={...st.insets.right}; if(st.insets.units) sides.units.insets={...st.insets.units}; }
   }catch(e){}
 }
 
@@ -755,7 +788,7 @@ function init(){
   document.getElementById('gridToggle').checked = showGrid;
 
   buildCenter();
-  buildOverlay('left'); buildOverlay('right');
+  IMG_SIDES.forEach(side=> buildOverlay(side));
   for(let i=0;i<ROWS;i++) updateRowColor(i);
   updateLegend();
   refreshOverlays();
@@ -763,8 +796,7 @@ function init(){
 
   // re-render canvases on container resize
   const ro = new ResizeObserver(()=>{ renderAll(); });
-  ro.observe(el('left','body'));
-  ro.observe(el('right','body'));
+  IMG_SIDES.forEach(side=> ro.observe(el(side,'body')));
 }
 window.addEventListener('load', init);
 
