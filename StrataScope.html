@@ -51,13 +51,14 @@
      confined to its own auto-sized grid area and scrolls away when zoomed in.)
      Both grids share the same column template and a reserved scrollbar gutter
      so the columns stay aligned even when the bodies overflow.
-     Columns: label selector (leftmost), then Voltage / CSD / Units images. */
+     Columns: label selector (leftmost), then Voltage / CSD / Units / Theta
+     images. The image column count is recomputed in JS as panels are toggled. */
   .workspace{
     display:flex;flex-direction:column;flex:1;overflow:hidden;padding:8px;
   }
   .heads,.bodies{
     display:grid;
-    grid-template-columns:var(--centerW) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
+    grid-template-columns:var(--centerW) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
     column-gap:8px;scrollbar-gutter:stable;
   }
   .heads{flex:none;overflow:hidden}
@@ -141,6 +142,13 @@
     <label class="toggle"><input type="checkbox" id="gridToggle" checked> Grid</label>
     <label class="toggle"><input type="checkbox" id="overlayToggle"> Color overlay</label>
   </div>
+  <div class="tool-group" id="panelToggles">
+    <span style="color:var(--muted)">Panels</span>
+    <label class="toggle"><input type="checkbox" data-panel="left"  checked> Voltage</label>
+    <label class="toggle"><input type="checkbox" data-panel="right" checked> CSD</label>
+    <label class="toggle"><input type="checkbox" data-panel="units" checked> Units</label>
+    <label class="toggle"><input type="checkbox" data-panel="theta" checked> Theta</label>
+  </div>
   <div class="tool-group">
     <span style="color:var(--muted)">Row height</span>
     <input type="range" id="zoom" min="14" max="48" value="24" step="1" title="Row height">
@@ -189,6 +197,15 @@
     </div>
     <div class="fname" data-role="fname">No image — 32 even channels, each row = a label pair</div>
   </div>
+
+  <div class="col-head imghead" data-side="theta">
+    <div class="title"><span class="dot" style="background:#9b3fb0"></span> Theta (LFP band)</div>
+    <div class="head-btns">
+      <button data-act="upload">⬆ Upload</button>
+      <button data-act="crop">✂ Crop</button>
+    </div>
+    <div class="fname" data-role="fname">No image — click Upload or drag a PNG here</div>
+  </div>
   </div>
 
   <!-- ===== Body row (scrolls) ===== -->
@@ -211,6 +228,12 @@
     <canvas class="imgcanvas" data-role="canvas"></canvas>
     <div class="overlay" data-role="overlay"></div>
     <div class="drop-hint" data-role="hint">Drop multiunit image here</div>
+  </div>
+
+  <div class="col-body" data-side="theta" data-role="body">
+    <canvas class="imgcanvas" data-role="canvas"></canvas>
+    <div class="overlay" data-role="overlay"></div>
+    <div class="drop-hint" data-role="hint">Drop theta image here</div>
   </div>
   </div>
 
@@ -252,8 +275,12 @@ const ROWS = 64;
 // Image panels. Voltage/CSD show one row per labeller channel (64); the
 // multiunit "Units" panel plots every even channel, so it has half the rows
 // and each of its rows spans a pair of labeller rows (1/2, 3/4, ...).
-const IMG_SIDES   = ['left','right','units'];
-const PANEL_ROWS  = { left:ROWS, right:ROWS, units:ROWS/2 };
+// Theta is an LFP-band view; assumed one row per channel (64). If your theta
+// export is every even channel like Units, change theta to ROWS/2 below.
+const IMG_SIDES   = ['left','right','units','theta'];
+const PANEL_ROWS  = { left:ROWS, right:ROWS, units:ROWS/2, theta:ROWS };
+// panels that get plot-box auto-detect on upload (matplotlib exports only)
+const AUTODETECT_SIDES = ['left','right'];
 
 const REGIONS = ["","CA1 SP","CA1","CA1 SLM","DG OML1","DG MML1","DG GCL1","HIL","DG GCL2","DG MML2","DG OML2","DG"];
 const REGION_COLORS = {
@@ -265,6 +292,7 @@ const DEFAULT_INSETS = {L:4.5, R:8.0, T:2.5, B:6.0};
 // the MATLAB multiunit export has no colourbar and a slimmer frame, so it gets
 // its own starting crop (best-effort "ready to go" — tweak in the crop editor)
 const UNITS_INSETS   = {L:0.0, R:0.0, T:2.0, B:3.9};
+const THETA_INSETS   = {L:3.4, R:21.7, T:3.9, B:5.0};
 
 const STORE_KEY = "layercake_state_v1";
 
@@ -273,7 +301,9 @@ const sides = {
   left:  newSide("left"),
   right: newSide("right"),
   units: newSide("units", UNITS_INSETS),
+  theta: newSide("theta", THETA_INSETS),
 };
+const panelVisible = { left:true, right:true, units:true, theta:true };
 let labels = new Array(ROWS).fill("");
 let showOverlay = false;
 let showGrid = true;
@@ -301,7 +331,7 @@ const fileInput = document.getElementById('fileInput');
 //  Center selector rows
 // =========================================================
 const rowEls = [];        // center rows
-const overlayRows = { left:[], right:[], units:[] };
+const overlayRows = { left:[], right:[], units:[], theta:[] };
 
 function buildCenter(){
   centerBody.innerHTML = "";
@@ -452,6 +482,23 @@ function renderAll(){
 }
 
 // =========================================================
+//  Show / hide individual image panels
+//  Hidden panels are removed from the grid and the visible ones re-flow to
+//  fill the row (the label selector stays pinned as the first column).
+// =========================================================
+function applyVisibility(){
+  IMG_SIDES.forEach(side=>{
+    const disp = panelVisible[side] ? '' : 'none';
+    headEl(side).style.display = disp;
+    bodyEl(side).style.display = disp;
+  });
+  const nVis = IMG_SIDES.filter(s=>panelVisible[s]).length;
+  const cols = 'var(--centerW)' + ' minmax(0,1fr)'.repeat(nVis);
+  document.querySelector('.heads').style.gridTemplateColumns = cols;
+  document.querySelector('.bodies').style.gridTemplateColumns = cols;
+}
+
+// =========================================================
 //  Auto-detect the plot box (the black axes rectangle)
 //  Returns crop insets {L,R,T,B} in %, or null if not found.
 //  Cropping to this box makes the 64 even rows line up with channels.
@@ -516,9 +563,9 @@ function loadFile(side, file){
     const s = sides[side];
     s.img = img; s.natW = img.naturalWidth; s.natH = img.naturalHeight; s.fileName = file.name;
     el(side,'fname').textContent = file.name + `  (${img.naturalWidth}×${img.naturalHeight})`;
-    // auto-crop to the detected plot box (skipped for the units panel, whose
-    // outer frame fools the detector — it keeps its UNITS_INSETS start instead)
-    if(side !== 'units'){ const det = detectPlotBox(img); if(det) s.insets = det; }
+    // auto-crop to the detected plot box for matplotlib exports; the MATLAB
+    // units/theta panels keep their preset insets (their frame fools detection)
+    if(AUTODETECT_SIDES.includes(side)){ const det = detectPlotBox(img); if(det) s.insets = det; }
     renderImage(side);
     saveState();
   };
@@ -687,6 +734,12 @@ function updateLegend(){
 // =========================================================
 document.getElementById('overlayToggle').addEventListener('change', e=>{ showOverlay=e.target.checked; refreshOverlays(); saveState(); });
 document.getElementById('gridToggle').addEventListener('change', e=>{ showGrid=e.target.checked; refreshOverlays(); saveState(); });
+document.querySelectorAll('#panelToggles input[data-panel]').forEach(inp=>{
+  inp.addEventListener('change', ()=>{
+    panelVisible[inp.dataset.panel] = inp.checked;
+    applyVisibility(); renderAll(); saveState();
+  });
+});
 document.getElementById('zoom').addEventListener('input', e=>{
   rowH = parseInt(e.target.value,10);
   document.documentElement.style.setProperty('--rowH', rowH+'px');
@@ -759,8 +812,8 @@ fileInput.addEventListener('change', ()=>{
 function saveState(){
   try{
     localStorage.setItem(STORE_KEY, JSON.stringify({
-      labels, showOverlay, showGrid, rowH,
-      insets:{left:sides.left.insets, right:sides.right.insets, units:sides.units.insets}
+      labels, showOverlay, showGrid, rowH, panelVisible,
+      insets:{left:sides.left.insets, right:sides.right.insets, units:sides.units.insets, theta:sides.theta.insets}
     }));
   }catch(e){}
 }
@@ -773,7 +826,8 @@ function loadState(){
     if(typeof st.showOverlay==='boolean') showOverlay = st.showOverlay;
     if(typeof st.showGrid==='boolean') showGrid = st.showGrid;
     if(typeof st.rowH==='number') rowH = st.rowH;
-    if(st.insets){ if(st.insets.left) sides.left.insets={...st.insets.left}; if(st.insets.right) sides.right.insets={...st.insets.right}; if(st.insets.units) sides.units.insets={...st.insets.units}; }
+    if(st.panelVisible) IMG_SIDES.forEach(s=>{ if(typeof st.panelVisible[s]==='boolean') panelVisible[s]=st.panelVisible[s]; });
+    if(st.insets){ if(st.insets.left) sides.left.insets={...st.insets.left}; if(st.insets.right) sides.right.insets={...st.insets.right}; if(st.insets.units) sides.units.insets={...st.insets.units}; if(st.insets.theta) sides.theta.insets={...st.insets.theta}; }
   }catch(e){}
 }
 
@@ -786,6 +840,8 @@ function init(){
   document.getElementById('zoom').value = rowH;
   document.getElementById('overlayToggle').checked = showOverlay;
   document.getElementById('gridToggle').checked = showGrid;
+  document.querySelectorAll('#panelToggles input[data-panel]').forEach(inp=>{ inp.checked = panelVisible[inp.dataset.panel]; });
+  applyVisibility();
 
   buildCenter();
   IMG_SIDES.forEach(side=> buildOverlay(side));
